@@ -1,6 +1,7 @@
 import sys
 import os
-from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QFileDialog, QProgressBar
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QPushButton, QFileDialog, QProgressBar,
+                             QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QDialogButtonBox)
 from PyQt6.QtCore import QThread, pyqtSignal
 import requests
 import mutagen
@@ -10,8 +11,39 @@ from mutagen.id3 import ID3, APIC
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
+class MetadataComparisonDialog(QDialog):
+    def __init__(self, old_metadata, new_metadata, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Metadata Comparison")
+        self.setLayout(QVBoxLayout())
+
+        fields = ['artist', 'title', 'album', 'date']
+        self.new_metadata = new_metadata
+
+        for field in fields:
+            row = QHBoxLayout()
+            row.addWidget(QLabel(f"{field.capitalize()}:"))
+            row.addWidget(QLabel(old_metadata.get(field, '')))
+            edit = QLineEdit(new_metadata.get(field, ''))
+            edit.setObjectName(field)
+            row.addWidget(edit)
+            self.layout().addLayout(row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self.layout().addWidget(buttons)
+
+    def get_edited_metadata(self):
+        for field in ['artist', 'title', 'album', 'date']:
+            edit = self.findChild(QLineEdit, field)
+            if edit:
+                self.new_metadata[field] = edit.text()
+        return self.new_metadata
+
 class AudioProcessor(QThread):
     progress = pyqtSignal(int)
+    metadata_ready = pyqtSignal(str, dict, dict)
     
     def __init__(self, files, api_token):
         super().__init__()
@@ -20,63 +52,48 @@ class AudioProcessor(QThread):
     
     def run(self):
         for i, file in enumerate(self.files):
-            self.process_file(file)
+            old_metadata, new_metadata = self.process_file(file)
+            self.metadata_ready.emit(file, old_metadata, new_metadata)
             self.progress.emit(int((i + 1) / len(self.files) * 100))
     
     def process_file(self, file):
         # Read audio file
         audio = mutagen.File(file)
         
+        # Get old metadata
+        old_metadata = self.get_metadata(audio)
+        
         # Create a sample of the audio for recognition
         sample = self.create_sample(file)
         
         # Send sample to AudD.io API
-        response = self.recognize_song(sample)
+        new_metadata = self.recognize_song(sample)
         
-        if response:
-            # Update metadata
-            if isinstance(audio, mutagen.mp3.MP3):
-                audio = ID3(file)
-                if 'artist' in response: audio['TPE1'] = mutagen.id3.TPE1(encoding=3, text=response['artist'])
-                if 'title' in response: audio['TIT2'] = mutagen.id3.TIT2(encoding=3, text=response['title'])
-                if 'album' in response: audio['TALB'] = mutagen.id3.TALB(encoding=3, text=response['album'])
-                if 'date' in response: audio['TDRC'] = mutagen.id3.TDRC(encoding=3, text=response['release_date'])
-            elif isinstance(audio, mutagen.flac.FLAC):
-                if 'artist' in response: audio['artist'] = response['artist']
-                if 'title' in response: audio['title'] = response['title']
-                if 'album' in response: audio['album'] = response['album']
-                if 'date' in response: audio['date'] = response['release_date']
-            elif isinstance(audio, mutagen.mp4.MP4):
-                if 'artist' in response: audio['\xa9ART'] = response['artist']
-                if 'title' in response: audio['\xa9nam'] = response['title']
-                if 'album' in response: audio['\xa9alb'] = response['album']
-                if 'date' in response: audio['\xa9day'] = response['release_date']
-            else:
-                # For other file types
-                for key in ['artist', 'title', 'album', 'date']:
-                    if key in response:
-                        try:
-                            audio[key] = response[key if key != 'date' else 'release_date']
-                        except KeyError:
-                            print(f"Warning: '{key}' tag not supported for this file type")
-            
-            # Embed artwork
-            if 'image' in response:
-                artwork_data = self.download_artwork(response['image'])
-                if artwork_data:
-                    self.embed_artwork(audio, artwork_data)
-            
-            audio.save()
-            
-            # Rename the file
-            try:
-                new_filename = f"{response['artist']} - {response['title']}{os.path.splitext(file)[1]}"
-                new_filename = "".join(c for c in new_filename if c.isalnum() or c in (' ', '.', '-', '_')).rstrip()
-                new_path = os.path.join(os.path.dirname(file), new_filename)
-                os.rename(file, new_path)
-            except OSError as e:
-                print(f"Error renaming file: {str(e)}")
-    
+        return old_metadata, new_metadata
+
+    def get_metadata(self, audio):
+        metadata = {}
+        if isinstance(audio, mutagen.mp3.MP3):
+            audio = ID3(audio.filename)
+            metadata['artist'] = str(audio.get('TPE1', ['']))
+            metadata['title'] = str(audio.get('TIT2', ['']))
+            metadata['album'] = str(audio.get('TALB', ['']))
+            metadata['date'] = str(audio.get('TDRC', ['']))
+        elif isinstance(audio, mutagen.flac.FLAC):
+            metadata['artist'] = ', '.join(audio.get('artist', []))
+            metadata['title'] = ', '.join(audio.get('title', []))
+            metadata['album'] = ', '.join(audio.get('album', []))
+            metadata['date'] = ', '.join(audio.get('date', []))
+        elif isinstance(audio, mutagen.mp4.MP4):
+            metadata['artist'] = ', '.join(audio.get('\xa9ART', []))
+            metadata['title'] = ', '.join(audio.get('\xa9nam', []))
+            metadata['album'] = ', '.join(audio.get('\xa9alb', []))
+            metadata['date'] = ', '.join(audio.get('\xa9day', []))
+        else:
+            for key in ['artist', 'title', 'album', 'date']:
+                metadata[key] = ', '.join(audio.get(key, []))
+        return metadata
+
     def create_sample(self, file):
         # Load the audio file
         audio = AudioSegment.from_file(file)
@@ -122,20 +139,6 @@ class AudioProcessor(QThread):
             print(f"API request failed: {str(e)}")
             return None
     
-    def save_artwork(self, image_url, directory):
-        if not image_url:
-            return None
-        try:
-            response = requests.get(image_url)
-            response.raise_for_status()
-            artwork_path = os.path.join(directory, 'artwork.jpg')
-            with open(artwork_path, 'wb') as f:
-                f.write(response.content)
-            return artwork_path
-        except requests.RequestException as e:
-            print(f"Failed to download artwork: {str(e)}")
-            return None
-
     def download_artwork(self, image_url):
         if not image_url:
             return None
@@ -194,10 +197,60 @@ class MainWindow(QMainWindow):
         self.progress_bar.show()
         self.processor = AudioProcessor(files, self.api_token)
         self.processor.progress.connect(self.update_progress)
+        self.processor.metadata_ready.connect(self.show_comparison_dialog)
         self.processor.start()
     
     def update_progress(self, value):
         self.progress_bar.setValue(value)
+
+    def show_comparison_dialog(self, file, old_metadata, new_metadata):
+        dialog = MetadataComparisonDialog(old_metadata, new_metadata, self)
+        if dialog.exec():
+            edited_metadata = dialog.get_edited_metadata()
+            self.apply_metadata(file, edited_metadata)
+
+    def apply_metadata(self, file, metadata):
+        audio = mutagen.File(file)
+        if isinstance(audio, mutagen.mp3.MP3):
+            audio = ID3(file)
+            if 'artist' in metadata: audio['TPE1'] = mutagen.id3.TPE1(encoding=3, text=metadata['artist'])
+            if 'title' in metadata: audio['TIT2'] = mutagen.id3.TIT2(encoding=3, text=metadata['title'])
+            if 'album' in metadata: audio['TALB'] = mutagen.id3.TALB(encoding=3, text=metadata['album'])
+            if 'date' in metadata: audio['TDRC'] = mutagen.id3.TDRC(encoding=3, text=metadata['date'])
+        elif isinstance(audio, mutagen.flac.FLAC):
+            if 'artist' in metadata: audio['artist'] = metadata['artist']
+            if 'title' in metadata: audio['title'] = metadata['title']
+            if 'album' in metadata: audio['album'] = metadata['album']
+            if 'date' in metadata: audio['date'] = metadata['date']
+        elif isinstance(audio, mutagen.mp4.MP4):
+            if 'artist' in metadata: audio['\xa9ART'] = metadata['artist']
+            if 'title' in metadata: audio['\xa9nam'] = metadata['title']
+            if 'album' in metadata: audio['\xa9alb'] = metadata['album']
+            if 'date' in metadata: audio['\xa9day'] = metadata['date']
+        else:
+            for key in ['artist', 'title', 'album', 'date']:
+                if key in metadata:
+                    try:
+                        audio[key] = metadata[key]
+                    except KeyError:
+                        print(f"Warning: '{key}' tag not supported for this file type")
+        
+        # Embed artwork
+        if 'image' in metadata:
+            artwork_data = self.processor.download_artwork(metadata['image'])
+            if artwork_data:
+                self.processor.embed_artwork(audio, artwork_data)
+        
+        audio.save()
+        
+        # Rename the file
+        try:
+            new_filename = f"{metadata['artist']} - {metadata['title']}{os.path.splitext(file)[1]}"
+            new_filename = "".join(c for c in new_filename if c.isalnum() or c in (' ', '.', '-', '_')).rstrip()
+            new_path = os.path.join(os.path.dirname(file), new_filename)
+            os.rename(file, new_path)
+        except OSError as e:
+            print(f"Error renaming file: {str(e)}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
