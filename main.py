@@ -10,6 +10,7 @@ from pydub import AudioSegment
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, APIC
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
+from mutagen.wave import WAVE
 
 class MetadataComparisonDialog(QDialog):
     def __init__(self, old_metadata, new_metadata, parent=None):
@@ -211,7 +212,15 @@ class MainWindow(QMainWindow):
 
     def apply_metadata(self, file, metadata):
         audio = mutagen.File(file)
-        if isinstance(audio, mutagen.mp3.MP3):
+        if isinstance(audio, mutagen.wave.WAVE):
+            # WAV files have limited metadata support
+            print(f"Warning: Limited metadata support for WAV file: {file}")
+            # We can try to set some basic tags, but they might not be supported by all players
+            audio.tags = WAVE.tags(audio)
+            if 'artist' in metadata: audio.tags['artist'] = metadata['artist']
+            if 'title' in metadata: audio.tags['title'] = metadata['title']
+            audio.save()
+        elif isinstance(audio, mutagen.mp3.MP3):
             tags = ID3(file)
             if 'artist' in metadata: tags['TPE1'] = TPE1(encoding=3, text=metadata['artist'])
             if 'title' in metadata: tags['TIT2'] = TIT2(encoding=3, text=metadata['title'])
@@ -230,22 +239,25 @@ class MainWindow(QMainWindow):
             if 'album' in metadata: audio['\xa9alb'] = metadata['album']
             if 'date' in metadata: audio['\xa9day'] = metadata['date']
             audio.save()
-        else:
+        elif audio is not None:
             for key in ['artist', 'title', 'album', 'date']:
                 if key in metadata:
                     try:
-                        audio[key] = metadata[key]
+                        audio[key] = [metadata[key]]  # Set as a list for compatibility
                     except KeyError:
                         print(f"Warning: '{key}' tag not supported for this file type")
             audio.save()
-        
+        else:
+            print(f"Warning: Unsupported file type for {file}")
+            return
+
         # Embed artwork
-        if 'image' in metadata:
+        if 'image' in metadata and metadata['image']:
             artwork_data = self.processor.download_artwork(metadata['image'])
             if artwork_data:
                 self.processor.embed_artwork(audio, artwork_data)
                 audio.save()
-        
+
         # Rename the file
         try:
             new_filename = f"{metadata['artist']} - {metadata['title']}{os.path.splitext(file)[1]}"
