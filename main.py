@@ -7,7 +7,7 @@ import requests
 import mutagen
 import io
 from pydub import AudioSegment
-from mutagen.id3 import ID3, APIC
+from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, APIC
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
@@ -212,21 +212,24 @@ class MainWindow(QMainWindow):
     def apply_metadata(self, file, metadata):
         audio = mutagen.File(file)
         if isinstance(audio, mutagen.mp3.MP3):
-            audio = ID3(file)
-            if 'artist' in metadata: audio['TPE1'] = mutagen.id3.TPE1(encoding=3, text=metadata['artist'])
-            if 'title' in metadata: audio['TIT2'] = mutagen.id3.TIT2(encoding=3, text=metadata['title'])
-            if 'album' in metadata: audio['TALB'] = mutagen.id3.TALB(encoding=3, text=metadata['album'])
-            if 'date' in metadata: audio['TDRC'] = mutagen.id3.TDRC(encoding=3, text=metadata['date'])
+            tags = ID3(file)
+            if 'artist' in metadata: tags['TPE1'] = TPE1(encoding=3, text=metadata['artist'])
+            if 'title' in metadata: tags['TIT2'] = TIT2(encoding=3, text=metadata['title'])
+            if 'album' in metadata: tags['TALB'] = TALB(encoding=3, text=metadata['album'])
+            if 'date' in metadata: tags['TDRC'] = TDRC(encoding=3, text=metadata['date'])
+            tags.save()
         elif isinstance(audio, mutagen.flac.FLAC):
             if 'artist' in metadata: audio['artist'] = metadata['artist']
             if 'title' in metadata: audio['title'] = metadata['title']
             if 'album' in metadata: audio['album'] = metadata['album']
             if 'date' in metadata: audio['date'] = metadata['date']
+            audio.save()
         elif isinstance(audio, mutagen.mp4.MP4):
             if 'artist' in metadata: audio['\xa9ART'] = metadata['artist']
             if 'title' in metadata: audio['\xa9nam'] = metadata['title']
             if 'album' in metadata: audio['\xa9alb'] = metadata['album']
             if 'date' in metadata: audio['\xa9day'] = metadata['date']
+            audio.save()
         else:
             for key in ['artist', 'title', 'album', 'date']:
                 if key in metadata:
@@ -234,14 +237,14 @@ class MainWindow(QMainWindow):
                         audio[key] = metadata[key]
                     except KeyError:
                         print(f"Warning: '{key}' tag not supported for this file type")
+            audio.save()
         
         # Embed artwork
         if 'image' in metadata:
             artwork_data = self.processor.download_artwork(metadata['image'])
             if artwork_data:
                 self.processor.embed_artwork(audio, artwork_data)
-        
-        audio.save()
+                audio.save()
         
         # Rename the file
         try:
