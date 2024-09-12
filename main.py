@@ -60,11 +60,11 @@ class AudioProcessor(QThread):
                         except KeyError:
                             print(f"Warning: '{key}' tag not supported for this file type")
             
-            # Save artwork
-            artwork_path = self.save_artwork(response['image'], os.path.dirname(file))
-            if artwork_path:
-                # Adding artwork is file type specific and might need additional handling
-                pass
+            # Embed artwork
+            if 'image' in response:
+                artwork_data = self.download_artwork(response['image'])
+                if artwork_data:
+                    self.embed_artwork(audio, artwork_data)
             
             audio.save()
             
@@ -135,6 +135,39 @@ class AudioProcessor(QThread):
         except requests.RequestException as e:
             print(f"Failed to download artwork: {str(e)}")
             return None
+
+    def download_artwork(self, image_url):
+        if not image_url:
+            return None
+        try:
+            response = requests.get(image_url)
+            response.raise_for_status()
+            return response.content
+        except requests.RequestException as e:
+            print(f"Failed to download artwork: {str(e)}")
+            return None
+
+    def embed_artwork(self, audio, artwork_data):
+        if isinstance(audio, mutagen.mp3.MP3):
+            audio['APIC'] = APIC(
+                encoding=3,
+                mime='image/jpeg',
+                type=3,  # 3 is for the cover image
+                desc=u'Cover',
+                data=artwork_data
+            )
+        elif isinstance(audio, mutagen.flac.FLAC):
+            picture = Picture()
+            picture.data = artwork_data
+            picture.type = 3
+            picture.mime = 'image/jpeg'
+            picture.desc = 'Cover'
+            audio.add_picture(picture)
+        elif isinstance(audio, mutagen.mp4.MP4):
+            audio['covr'] = [MP4Cover(artwork_data, imageformat=MP4Cover.FORMAT_JPEG)]
+        else:
+            print("Artwork embedding not supported for this file type")
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
