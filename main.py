@@ -6,6 +6,9 @@ import requests
 import mutagen
 import io
 from pydub import AudioSegment
+from mutagen.id3 import ID3, APIC
+from mutagen.flac import FLAC, Picture
+from mutagen.mp4 import MP4, MP4Cover
 
 class AudioProcessor(QThread):
     progress = pyqtSignal(int)
@@ -22,7 +25,7 @@ class AudioProcessor(QThread):
     
     def process_file(self, file):
         # Read audio file
-        audio = mutagen.File(file, easy=True)
+        audio = mutagen.File(file)
         
         # Create a sample of the audio for recognition
         sample = self.create_sample(file)
@@ -32,20 +35,30 @@ class AudioProcessor(QThread):
         
         if response:
             # Update metadata
-            if isinstance(audio, mutagen.easyid3.EasyID3):
-                # For MP3 files
+            if isinstance(audio, mutagen.mp3.MP3):
+                audio = ID3(file)
+                if 'artist' in response: audio['TPE1'] = mutagen.id3.TPE1(encoding=3, text=response['artist'])
+                if 'title' in response: audio['TIT2'] = mutagen.id3.TIT2(encoding=3, text=response['title'])
+                if 'album' in response: audio['TALB'] = mutagen.id3.TALB(encoding=3, text=response['album'])
+                if 'date' in response: audio['TDRC'] = mutagen.id3.TDRC(encoding=3, text=response['release_date'])
+            elif isinstance(audio, mutagen.flac.FLAC):
                 if 'artist' in response: audio['artist'] = response['artist']
                 if 'title' in response: audio['title'] = response['title']
                 if 'album' in response: audio['album'] = response['album']
                 if 'date' in response: audio['date'] = response['release_date']
-                # Note: 'label' is not a standard ID3 tag, so we skip it
+            elif isinstance(audio, mutagen.mp4.MP4):
+                if 'artist' in response: audio['\xa9ART'] = response['artist']
+                if 'title' in response: audio['\xa9nam'] = response['title']
+                if 'album' in response: audio['\xa9alb'] = response['album']
+                if 'date' in response: audio['\xa9day'] = response['release_date']
             else:
                 # For other file types
-                if 'artist' in response: audio['artist'] = response['artist']
-                if 'title' in response: audio['title'] = response['title']
-                if 'album' in response: audio['album'] = response['album']
-                if 'date' in response: audio['date'] = response['release_date']
-                if 'label' in response: audio['label'] = response['label']
+                for key in ['artist', 'title', 'album', 'date']:
+                    if key in response:
+                        try:
+                            audio[key] = response[key if key != 'date' else 'release_date']
+                        except KeyError:
+                            print(f"Warning: '{key}' tag not supported for this file type")
             
             # Save artwork
             artwork_path = self.save_artwork(response['image'], os.path.dirname(file))
@@ -137,7 +150,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setGeometry(50, 120, 200, 25)
         self.progress_bar.hide()
         
-        self.api_token = "REDACTED"  # Replace with your actual API token
+        self.api_token = "db0c8fb5781cd90f459b003dbcfbb93b"  # Replace with your actual API token
     
     def select_files(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Select Audio Files", "", "Audio Files (*.mp3 *.wav *.ogg *.flac *.m4a)")
